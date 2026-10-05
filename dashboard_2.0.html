@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Analítico - Ambulatório de Oncologia</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- SheetJS (Excel Parser) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- PapaParse (Novo leitor de Google Sheets CSV) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <!-- html2pdf.js for PDF Export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        brand: {
+                            dark: '#582b6b', 
+                            light: '#7b3e94',
+                            accent: '#82d300', 
+                            surface: '#f9f8fb'
+                        },
+                        primary: '#582b6b',
+                        secondary: '#7b3e94',
+                        accent: '#82d300',
+                        warning: '#f59e0b',
+                        danger: '#ef4444',
+                        dark: '#3f1e4d'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #f9f8fb; }
+        .glass-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 3px 6px -1px rgba(88, 43, 107, 0.04);
+            border: 1px solid #eadef4;
+            overflow: hidden;
+            position: relative;
+        }
+        .heatmap-cell { transition: all 0.2s ease; cursor: pointer; }
+        .heatmap-cell:hover { transform: scale(1.1); z-index: 10; border: 1px solid #000; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        
+        #upload-overlay {
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+        }
+        @keyframes pulse-subtle {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .ai-pulse { animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        
+        @media print {
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            body { font-size: 8.5px !important; background: white !important; overflow: visible !important; }
+            .glass-card { padding: 8px !important; margin-bottom: 6px !important; box-shadow: none !important; border: 1px solid #cbd5e1 !important; break-inside: avoid; page-break-inside: avoid; }
+            header { display: none !important; }
+            main { padding: 4px !important; width: 100% !important; gap: 8px !important; }
+            canvas { max-height: 180px !important; width: 100% !important; }
+        }
+    </style>
+</head>
+<body class="font-sans text-slate-800 antialiased min-h-screen flex flex-col relative text-xs">
+
+    <div id="upload-overlay" class="absolute inset-0 z-[100] bg-slate-900/80 flex flex-col items-center justify-center text-white transition-opacity duration-300">
+        <div class="bg-white text-slate-800 p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center border-t-8 border-brand-accent">
+            <div class="bg-brand-accent/15 w-16 h-16 mx-auto rounded-full flex items-center justify-center mb-4">
+                <i class="ph-bold ph-cloud-arrow-down text-4xl text-brand-dark"></i>
+            </div>
+            
+            <h2 id="overlay-title" class="text-xl font-bold mb-1">A sincronizar com a Nuvem...</h2>
+            <p id="overlay-desc" class="text-xs text-slate-500 mb-5">A ligar ao Google Sheets Oficial da Coordenação.</p>
+            
+            <div id="loading-spinner" class="mt-3 flex flex-col items-center">
+                <div class="w-5 h-5 border-3 border-brand-accent border-t-transparent rounded-full animate-spin mb-2"></div>
+                <p id="spinner-text" class="text-xs text-slate-500 font-semibold">A processar os registos em tempo real...</p>
+            </div>
+
+            <div id="manual-upload-container" class="hidden">
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-5 text-left flex gap-2">
+                    <i class="ph-fill ph-warning text-amber-500 text-lg shrink-0"></i>
+                    <p class="text-[11px] text-amber-800 leading-tight">Não foi possível processar a Nuvem. Pode carregar o ficheiro manualmente como alternativa.</p>
+                </div>
+                <input type="file" id="excel-file" accept=".xlsx, .xls, .csv" class="hidden" />
+                <button onclick="document.getElementById('excel-file').click()" class="w-full bg-brand-dark hover:bg-brand-light text-white font-bold py-2.5 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 text-xs cursor-pointer">
+                    <i class="ph-bold ph-upload-simple"></i> Selecionar Ficheiro Local
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <header class="bg-brand-dark text-white px-4 py-3 shadow-md sticky top-0 z-50 border-b border-purple-900/35">
+        <div class="w-full flex flex-col md:flex-row justify-between items-center gap-3">
+            <div class="flex items-center gap-3">
+                <div class="bg-brand-accent/20 p-2 rounded-xl text-brand-accent">
+                    <i class="ph-fill ph-chart-line-up text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-sm font-bold tracking-tight">Analytics de Performance & Atendimento - Hospital Samaritano Higienópolis</h1>
+                    <p class="text-[10px] text-purple-200 font-medium">Monitorização e Gestão de Fluxos - Ambulatório de Oncologia (Sincronizado via Web)</p>
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap items-center gap-2 bg-purple-950/50 p-2 rounded-xl border border-purple-800/50">
+                <div class="flex items-center gap-1 px-1">
+                    <i class="ph ph-funnel text-purple-300 text-xs"></i>
+                    <span class="text-[11px] font-semibold text-purple-200">Filtros:</span>
+                </div>
+                
+                <select id="filter-year" class="bg-purple-900 text-white text-[11px] rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-brand-accent border-none font-medium cursor-pointer">
+                    <option value="all">Ano: Todos</option>
+                </select>
+
+                <select id="filter-month" class="bg-purple-900 text-white text-[11px] rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-brand-accent border-none font-medium cursor-pointer">
+                    <option value="all">Mês: Todos</option>
+                </select>
+
+                <select id="filter-user" class="bg-purple-900 text-white text-[11px] rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-brand-accent border-none max-w-[150px] truncate font-medium cursor-pointer">
+                    <option value="all">Atendente: Todos</option>
+                </select>
+
+                <button onclick="exportToPDF()" class="bg-white hover:bg-slate-100 text-brand-dark font-bold px-3 py-1 rounded-lg text-[11px] flex items-center gap-1.5 shadow-sm transition-all cursor-pointer">
+                    <i class="ph-bold ph-file-pdf text-xs text-red-600"></i> Exportar PDF
+                </button>
+
+                <button onclick="openAIModal()" class="bg-brand-accent hover:bg-lime-500 text-slate-900 font-bold px-3 py-1 rounded-lg text-[11px] flex items-center gap-1.5 shadow-sm transition-all ai-pulse cursor-pointer">
+                    <i class="ph-bold ph-sparkle text-xs"></i> IA Consultora
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main id="dashboard-printable-area" class="flex-grow p-4 md:p-6 w-full space-y-4 bg-[#f9f8fb]">
+        <section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div class="glass-card p-4 relative overflow-hidden flex flex-col justify-center">
+                <div class="absolute top-0 right-0 p-3 text-slate-300"><i class="ph-fill ph-users text-xl"></i></div>
+                <p class="text-[10px] text-slate-500 font-bold mb-1 truncate">Total de Atendimentos</p>
+                <h2 class="text-2xl font-extrabold text-dark leading-none" id="kpi-total">0</h2>
+                <div class="mt-2 flex items-center text-[10px] font-semibold text-purple-700">
+                    <i class="ph-bold ph-trend-up mr-1 text-[10px]"></i> Período Selecionado
+                </div>
+            </div>
+
+            <div class="glass-card p-4 relative overflow-hidden flex flex-col justify-center">
+                <div class="absolute top-0 right-0 p-3 text-slate-300"><i class="ph-fill ph-hourglass text-xl"></i></div>
+                <p class="text-[10px] text-slate-500 font-bold mb-1 truncate">TME Médio (Espera)</p>
+                <div class="flex items-baseline gap-1">
+                    <h2 class="text-2xl font-extrabold text-dark leading-none" id="kpi-tme-avg">0.0</h2>
+                    <span class="text-xs font-semibold text-slate-400">min</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 font-medium">Meta: &lt; 10 min</div>
+            </div>
+
+            <div class="glass-card p-4 relative overflow-hidden flex flex-col justify-center">
+                <div class="absolute top-0 right-0 p-3 text-slate-300"><i class="ph-fill ph-chart-line-up text-xl"></i></div>
+                <p class="text-[10px] text-slate-500 font-bold mb-1 truncate">Pico Máximo Diário de TME</p>
+                <div class="flex items-baseline gap-1">
+                    <h2 class="text-2xl font-extrabold text-warning leading-none" id="kpi-tme-max">0.0</h2>
+                    <span class="text-xs font-semibold text-slate-400">min</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 font-medium">Máximo Diário</div>
+            </div>
+
+            <div class="glass-card p-4 relative overflow-hidden flex flex-col justify-center">
+                <div class="absolute top-0 right-0 p-3 text-slate-300"><i class="ph-fill ph-user-check text-xl"></i></div>
+                <p class="text-[10px] text-slate-500 font-bold mb-1 truncate">TMA Médio (Atend.)</p>
+                <div class="flex items-baseline gap-1">
+                    <h2 class="text-2xl font-extrabold text-dark leading-none" id="kpi-tma-avg">0.0</h2>
+                    <span class="text-xs font-semibold text-slate-400">min</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 font-medium">Tempo de Recepção</div>
+            </div>
+
+            <div class="glass-card p-4 relative overflow-hidden flex flex-col justify-center">
+                <div class="absolute top-0 right-0 p-3 text-slate-300"><i class="ph-fill ph-activity text-xl"></i></div>
+                <p class="text-[10px] text-slate-500 font-bold mb-1 truncate">Pico Máximo Diário de TMA</p>
+                <div class="flex items-baseline gap-1">
+                    <h2 class="text-2xl font-extrabold text-danger leading-none" id="kpi-tma-max">0.0</h2>
+                    <span class="text-xs font-semibold text-slate-400">min</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500 font-medium">Máximo Diário</div>
+            </div>
+        </section>
+
+        <!-- Middle Section -->
+        <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="glass-card p-5 lg:col-span-2 flex flex-col justify-between">
+                <div>
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-3 gap-2">
+                        <div>
+                            <h3 class="font-bold text-xs text-dark flex items-center gap-1.5">
+                                <i class="ph-fill ph-chart-line-up text-brand-dark text-sm"></i>
+                                Evolução de Médias Diárias
+                            </h3>
+                            <p class="text-[11px] text-slate-500 mt-0.5">Acompanhe os tempos médios registrados a cada dia.</p>
+                        </div>
+                        <div id="timeline-buttons-container" class="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 shadow-inner">
+                        </div>
+                    </div>
+                    <div id="trend-opportunity-wrapper" class="mb-3"></div>
+                </div>
+                <div class="relative h-60 w-full mt-1">
+                    <canvas id="trendChart"></canvas>
+                </div>
+            </div>
+
+            <div class="glass-card p-5 flex flex-col bg-gradient-to-br from-white to-slate-50 justify-between">
+                <div>
+                    <div class="flex justify-between items-start mb-1.5">
+                        <h3 class="font-bold text-xs text-dark flex items-center gap-1.5 flex-wrap">
+                            <i class="ph-fill ph-star text-warning text-sm"></i>
+                            Destaques da Equipe (Top 3)
+                            <span id="badge-top3-month" class="text-[9px] font-bold bg-slate-100 text-slate-600 px-2.5 py-0.5 rounded-full border border-slate-200 ml-1">Todos os Meses</span>
+                        </h3>
+                    </div>
+                    <p class="text-[11px] text-slate-500 mb-3 border-b border-slate-100 pb-2.5">Premiados com base nos tempos de operação e <b>carga de senhas</b>.</p>
+                </div>
+                <div id="ranking-container" class="space-y-2 flex-grow"></div>
+            </div>
+        </section>
+
+        <!-- Bottom Section -->
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="glass-card p-5 flex flex-col justify-between">
+                <div>
+                    <div class="flex justify-between items-start mb-2">
+                        <h3 class="font-bold text-xs text-dark flex items-center gap-1.5 flex-wrap">
+                            <i class="ph-fill ph-thermometer text-brand-dark text-sm"></i>
+                            Mapa de Calor
+                            <span id="badge-heatmap-month" class="text-[9px] font-bold bg-slate-100 text-slate-600 px-2.5 py-0.5 rounded-full border border-slate-200 ml-1">Todos os Meses</span>
+                        </h3>
+                        <select id="filter-week" class="bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-brand-dark border border-slate-200 cursor-pointer">
+                            <option value="all">Todas as Semanas</option>
+                        </select>
+                    </div>
+                    <p id="heatmap-subtitle" class="text-[11px] text-slate-500 mb-2">Concentração de senhas geradas.</p>
+                    <div id="heatmap-opportunity-wrapper" class="mb-2"></div>
+                </div>
+
+                <div class="overflow-x-auto my-2">
+                    <div id="heatmap-container" class="min-w-[520px]"></div>
+                </div>
+                <div class="flex items-center gap-2 mt-2 text-[10px] font-semibold text-slate-500 justify-end">
+                    <span>Menos Fluxo</span>
+                    <div class="w-20 h-2.5 rounded-full bg-gradient-to-r from-purple-50 to-brand-dark"></div>
+                    <span>Pico</span>
+                </div>
+            </div>
+
+            <div class="glass-card p-5 flex flex-col justify-between">
+                <div>
+                    <div class="flex justify-between items-start mb-2.5">
+                        <h3 class="font-bold text-xs text-dark flex items-center gap-1.5 flex-wrap">
+                            <i class="ph-fill ph-users-three text-brand-dark text-sm"></i>
+                            Performance dos Atendentes
+                            <span id="badge-perf-month" class="text-[9px] font-bold bg-slate-100 text-slate-600 px-2.5 py-0.5 rounded-full border border-slate-200 ml-1">Todos os Meses</span>
+                        </h3>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-3 mb-2.5">
+                        <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-2">
+                                <div class="bg-brand-dark bg-opacity-10 p-1.5 rounded-lg text-brand-dark">
+                                    <i class="ph-fill ph-rocket-launch text-base"></i>
+                                </div>
+                                <div>
+                                    <p class="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Mais Ágil</p>
+                                    <p class="text-[11px] font-extrabold text-dark tracking-wide truncate max-w-[120px]" id="insight-fastest">-</p>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-xs font-black text-brand-dark" id="insight-fastest-val">-</span>
+                            </div>
+                        </div>
+                        <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-2">
+                                <div class="bg-purple-700 bg-opacity-10 p-1.5 rounded-lg text-purple-700">
+                                    <i class="ph-fill ph-stack text-base"></i>
+                                </div>
+                                <div>
+                                    <p class="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Maior Vol.</p>
+                                    <p class="text-[11px] font-extrabold text-dark tracking-wide truncate max-w-[120px]" id="insight-volume">-</p>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-xs font-black text-purple-700" id="insight-volume-val">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="radar-wrapper" class="mb-1"></div>
+                </div>
+
+                <div class="relative h-52 w-full mt-2">
+                    <canvas id="userChart"></canvas>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal IA -->
+    <div id="ai-modal" class="fixed inset-0 z-[150] bg-slate-900/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full flex flex-col overflow-hidden border border-slate-100 max-h-[90vh]">
+            <div class="bg-brand-dark text-white p-3.5 flex justify-between items-center">
+                <div class="flex items-center gap-2.5">
+                    <div class="bg-brand-accent/20 p-1.5 rounded-lg text-brand-accent">
+                        <i class="ph-bold ph-sparkle text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-xs">Assistente de Inteligência Operacional</h3>
+                        <p class="text-[10px] text-purple-200">Análise automatizada baseada nos dados do Google Sheets</p>
+                    </div>
+                </div>
+                <button onclick="closeAIModal()" class="text-purple-200 hover:text-white p-1 rounded-lg transition-colors cursor-pointer">
+                    <i class="ph-bold ph-x text-base"></i>
+                </button>
+            </div>
+            
+            <div class="p-4 overflow-y-auto space-y-2.5 flex-grow bg-slate-50/50">
+                <div id="ai-loading" class="hidden flex flex-col items-center justify-center py-6">
+                    <div class="w-6 h-6 border-3 border-brand-accent border-t-transparent rounded-full animate-spin mb-2"></div>
+                    <p class="text-[11px] text-slate-600 font-semibold">Gemini está a processar os registos do ambulatório...</p>
+                </div>
+
+                <div id="ai-content" class="space-y-2.5">
+                    <div class="bg-purple-50 border border-purple-200 rounded-xl p-3 text-purple-950 text-[11px]">
+                        <p class="font-bold mb-1 flex items-center gap-1.5 text-brand-dark text-[11px]"><i class="ph-fill ph-lightbulb text-brand-dark text-sm"></i> Resumo Executivo Gerado por IA:</p>
+                        <p id="ai-summary-text" class="text-[11px] leading-relaxed text-slate-700">Clique no botão abaixo para gerar uma auditoria operacional inteligente com base nos filtros atuais.</p>
+                    </div>
+
+                    <div class="border-t border-slate-200 pt-2.5">
+                        <label class="block text-[11px] font-bold text-slate-700 mb-1">Faça uma pergunta específica:</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="ai-custom-prompt" placeholder="Ex: Qual atendente teve o melhor desempenho?" class="flex-grow bg-white border border-slate-300 text-[11px] rounded-xl px-3 py-2 outline-none focus:ring-1 focus:ring-brand-dark font-medium">
+                            <button onclick="askCustomAI()" class="bg-brand-dark hover:bg-brand-light text-white font-bold px-3 py-2 rounded-xl text-[11px] transition-colors flex items-center gap-1 shadow-sm shrink-0 cursor-pointer">
+                                <i class="ph-bold ph-paper-plane-right text-xs"></i> Perguntar
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="ai-answer-box" class="hidden bg-white border border-slate-200 rounded-xl p-3 text-[11px] text-slate-800 leading-relaxed shadow-sm">
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-2.5 bg-white border-t border-slate-100 flex justify-between items-center">
+                <button onclick="generateAIExecutiveSummary()" class="bg-brand-dark hover:bg-brand-light text-white text-[11px] font-bold px-3.5 py-2 rounded-xl transition-colors flex items-center gap-1 cursor-pointer">
+                    <i class="ph-bold ph-arrows-clockwise text-xs"></i> Gerar Nova Análise
+                </button>
+                <button onclick="closeAIModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold px-3.5 py-2 rounded-xl transition-colors cursor-pointer">
+                    Fechar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ======= O SEU LINK OFICIAL DO GOOGLE SHEETS =======
+        const GOOGLE_SHEETS_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQg6ajRuDRH9Xi6myehK8GHRs7rAbUuNMxaA4Tvo-9fVueKhlVvmFS1IikQqGtABytYHagz6k0A_-Hn/pub?output=csv";
+
+        let REAL_DATA = [];
+        let trendChartInstance = null;
+        let userChartInstance = null;
+        let currentChartData = [];
+        let currentTimelineView = '7';
+
+        const nomesMeses = {
+            '1': 'Janeiro', '2': 'Fevereiro', '3': 'Março', '4': 'Abril', 
+            '5': 'Maio', '6': 'Junho', '7': 'Julho', '8': 'Agosto',
+            '9': 'Setembro', '10': 'Outubro', '11': 'Novembro', '12': 'Dezembro'
+        };
+
+        window.addEventListener('DOMContentLoaded', () => {
+            attemptAutoLoad();
+        });
+
+        // 1. CARREGAMENTO DO GOOGLE SHEETS (USANDO PAPAPARSE)
+        function attemptAutoLoad() {
+            Papa.parse(GOOGLE_SHEETS_CSV_URL, {
+                download: true,
+                header: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    try {
+                        document.getElementById('spinner-text').textContent = "A ler e organizar as colunas...";
+                        processExcelData(results.data);
+                    } catch (error) {
+                        console.error("Erro ao processar dados:", error);
+                        showManualUploadState("Erro inesperado a ler as colunas da nuvem.");
+                    }
+                },
+                error: function(err) {
+                    console.error("Erro do PapaParse:", err);
+                    showManualUploadState("A sua ligação à internet ou ao Google Sheets falhou.");
+                }
+            });
+        }
+
+        function showManualUploadState(msg) {
+            document.getElementById('upload-overlay').classList.remove('hidden');
+            document.getElementById('overlay-title').textContent = "Erro na Leitura";
+            document.getElementById('overlay-desc').textContent = msg || "Não foi possível carregar a base de dados online.";
+            document.getElementById('loading-spinner').classList.add('hidden');
+            document.getElementById('manual-upload-container').classList.remove('hidden');
+        }
+
+        document.getElementById('excel-file').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            document.getElementById('manual-upload-container').classList.add('hidden');
+            document.getElementById('loading-spinner').classList.remove('hidden');
+            document.getElementById('overlay-title').textContent = "A processar...";
+            document.getElementById('overlay-desc').textContent = "A ler arquivo local...";
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const json = XLSX.utils.sheet_to_json(worksheet, {raw: true});
+                    processExcelData(json);
+                } catch(error) {
+                    alert("Erro ao ler ficheiro Excel local.");
+                    showManualUploadState("Ficheiro inválido.");
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        function getShortName(fullName) {
+            if(!fullName) return '';
+            const rawParts = fullName.trim().split(/\s+/);
+            if (rawParts.length <= 2) return fullName.trim();
+            const prepositions = ['da', 'de', 'dos', 'das', 'do', 'e'];
+            let nameParts = [];
+            for (let i = 0; i < rawParts.length; i++) {
+                if (i === 0) { nameParts.push(rawParts[i]); } 
+                else if (prepositions.includes(rawParts[i].toLowerCase())) { nameParts.push(rawParts[i]); } 
+                else { nameParts.push(rawParts[i]); break; }
+            }
+            return nameParts.join(' ');
+        }
+
+        function parseExcelDate(val) {
+            if(!val) return null;
+            if(typeof val === 'number') {
+                const utc_days  = Math.floor(val - 25569);
+                const date_info = new Date(utc_days * 86400 * 1000);
+                const frac = val - Math.floor(val);
+                const secs = Math.round(86400 * frac);
+                return new Date(date_info.getUTCFullYear(), date_info.getUTCMonth(), date_info.getUTCDate(), 
+                                Math.floor(secs/3600), Math.floor((secs%3600)/60), Math.floor(secs%60));
+            }
+            if(typeof val === 'string') {
+                let cleanVal = val.trim();
+                if(cleanVal.includes('/')) {
+                    const parts = cleanVal.split(/[\s/:-]/); 
+                    if(parts.length >= 3) {
+                        if (parts[2].length === 4) return new Date(parts[2], parts[1]-1, parts[0], parts[3]||0, parts[4]||0, parts[5]||0);
+                        else if (parts[0].length === 4) return new Date(parts[0], parts[1]-1, parts[2], parts[3]||0, parts[4]||0, parts[5]||0);
+                    }
+                }
+                let d = new Date(cleanVal);
+                if(!isNaN(d)) return d;
+            }
+            return null;
+        }
+
+        function parseExcelTime(val) {
+            if(val == null || val === '') return 0;
+            if(typeof val === 'number') return parseFloat((val * 24 * 60).toFixed(1)); 
+            if(typeof val === 'string') {
+                const parts = val.split(':');
+                if(parts.length >= 2) {
+                    return parseFloat((parseInt(parts[0])*60 + parseInt(parts[1]) + (parts[2] ? parseInt(parts[2])/60 : 0)).toFixed(1));
+                }
+                const num = parseFloat(val.replace(',', '.'));
+                if(!isNaN(num)) return num;
+            }
+            return 0;
+        }
+
+        // 3. PROCESSAMENTO INTELIGENTE DE DADOS - CORRIGIDO
+        function processExcelData(jsonArray) {
+            REAL_DATA = [];
+            let usersSet = new Set();
+            let yearsSet = new Set();
+            let monthsSet = new Set();
+
+            if (!jsonArray || jsonArray.length === 0) {
+                alert("A base de dados parece estar vazia.");
+                showManualUploadState();
+                return;
+            }
+
+            let firstRow = jsonArray[0];
+            const allKeys = Object.keys(firstRow);
+
+            // Função mais restrita e segura para encontrar as colunas exatas
+            function findExactCol(words) {
+                for (let w of words) {
+                    let match = allKeys.find(k => k.trim().toLowerCase() === w.toLowerCase());
+                    if (match) return match;
+                }
+                for (let w of words) {
+                    let match = allKeys.find(k => k.toLowerCase().includes(w.toLowerCase()));
+                    if (match) return match;
+                }
+                return null;
+            }
+
+            // Mapeamento muito rigoroso para evitar que IDs numéricos virem "Atendente"
+            let dataKey = findExactCol(['dt geracao senha', 'data', 'dt geracao']);
+            let userKey = findExactCol(['usuario atend', 'atendente', 'nome do usuario', 'nome']);
+            let tmeKey = findExactCol(['tmp esp', 'tme', 'tempo de espera']);
+            let tmaKey = findExactCol(['tmp rec', 'tma', 'tempo de recepcao']);
+
+            // Fallback de emergência caso a busca semântica falhe completamente
+            if (!dataKey && allKeys.length > 0) dataKey = allKeys[0];
+            if (!userKey && allKeys.length > 1) userKey = allKeys[1];
+            if (!tmeKey && allKeys.length > 2) tmeKey = allKeys[2];
+            if (!tmaKey && allKeys.length > 3) tmaKey = allKeys[3];
+
+            jsonArray.forEach(row => {
+                const dtCol = row[dataKey];
+                if(!dtCol) return; 
+
+                const d = parseExcelDate(dtCol);
+                if(!d || isNaN(d.getTime())) return;
+
+                const rawUser = row[userKey] || '';
+                const user = String(rawUser).trim();
+                
+                if (user === '' || user.toLowerCase() === 'sem usuário' || user.toLowerCase() === 'desconhecido') return;
+                
+                // Extração dos tempos
+                const tme = parseExcelTime(row[tmeKey]);
+                const tma = parseExcelTime(row[tmaKey]);
+                
+                usersSet.add(user);
+                
+                const yyyy = d.getFullYear();
+                const mm = d.getMonth() + 1;
+                const dd = String(d.getDate()).padStart(2, '0');
+                const hh = String(d.getHours()).padStart(2, '0');
+                const min = String(d.getMinutes()).padStart(2, '0');
+                
+                yearsSet.add(yyyy);
+                monthsSet.add({ year: yyyy, month: mm, time: d.getTime() });
+
+                REAL_DATA.push({
+                    date: `${yyyy}-${String(mm).padStart(2, '0')}-${dd}`,
+                    dayNum: d.getDate(),
+                    month: mm,
+                    year: yyyy,
+                    dayOfWeek: d.getDay(),
+                    hour: d.getHours(),
+                    exactTime: `${hh}:${min}`,
+                    user: user,
+                    tme: tme,
+                    tma: tma
+                });
+            });
+
+            if(REAL_DATA.length === 0) {
+                const keysList = Object.keys(firstRow).join(" | ");
+                alert(`⚠️ Atenção: Não conseguimos ler as datas ou usuários.\n\nColunas encontradas na nuvem:\n[ ${keysList} ]\n\nPor favor, garanta que a primeira linha da sua planilha no Google Sheets contém os cabeçalhos corretos.`);
+                showManualUploadState("Revise as colunas da sua planilha.");
+                return;
+            }
+
+            // Preenche Filtros
+            const userSelect = document.getElementById('filter-user');
+            userSelect.innerHTML = '<option value="all">Atendente: Todos</option>';
+            Array.from(usersSet).sort().forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u; opt.textContent = u; userSelect.appendChild(opt);
+            });
+
+            const yearSelect = document.getElementById('filter-year');
+            yearSelect.innerHTML = '<option value="all">Ano: Todos</option>';
+            const sortedYears = Array.from(yearsSet).sort((a,b) => b - a);
+            sortedYears.forEach(y => {
+                const opt = document.createElement('option');
+                opt.value = y; opt.textContent = y; yearSelect.appendChild(opt);
+            });
+            
+            if(monthsSet.size > 0) {
+                const sortedMonths = Array.from(monthsSet).sort((a,b) => b.time - a.time);
+                const latest = sortedMonths[0];
+                yearSelect.value = latest.year;
+                
+                const monthSelect = document.getElementById('filter-month');
+                monthSelect.innerHTML = '<option value="all">Mês: Todos</option>';
+                const uniqueMonthsInYear = new Set(Array.from(monthsSet).filter(m => m.year === latest.year).map(m => m.month));
+                Array.from(uniqueMonthsInYear).sort((a,b)=>a-b).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m; opt.textContent = nomesMeses[m]; monthSelect.appendChild(opt);
+                });
+
+                monthSelect.value = latest.month;
+            }
+
+            // Sucesso! Esconde overlay
+            const overlay = document.getElementById('upload-overlay');
+            overlay.style.opacity = '0';
+            setTimeout(() => { overlay.style.display = 'none'; }, 300);
+            
+            updateDashboard();
+        }
+
+        // 4. ATUALIZAÇÃO DO DASHBOARD
+        document.getElementById('filter-month').addEventListener('change', updateDashboard);
+        document.getElementById('filter-year').addEventListener('change', updateDashboard);
+        document.getElementById('filter-user').addEventListener('change', updateDashboard);
+        document.getElementById('filter-week').addEventListener('change', updateDashboard);
+
+        function updateDashboard() {
+            if(REAL_DATA.length === 0) return;
+
+            const selectedMonth = document.getElementById('filter-month').value;
+            const selectedYear = document.getElementById('filter-year').value;
+            const selectedUser = document.getElementById('filter-user').value;
+
+            let badgeText = "Todos os Meses";
+            if (selectedMonth !== 'all') {
+                badgeText = nomesMeses[selectedMonth];
+                if (selectedYear !== 'all') { badgeText = `${nomesMeses[selectedMonth]} de ${selectedYear}`; }
+            } else if (selectedYear !== 'all') {
+                badgeText = `Todos os meses de ${selectedYear}`;
+            }
+
+            document.getElementById('badge-heatmap-month').textContent = badgeText;
+            document.getElementById('badge-perf-month').textContent = badgeText;
+            document.getElementById('badge-top3-month').textContent = badgeText;
+
+            const weekSelect = document.getElementById('filter-week');
+            
+            let filteredDataForWeeks = REAL_DATA.filter(row => {
+                let match = true;
+                if (selectedMonth !== 'all' && row.month != selectedMonth) match = false;
+                if (selectedYear !== 'all' && row.year != selectedYear) match = false;
+                if (selectedUser !== 'all' && row.user !== selectedUser) match = false;
+                return match;
+            });
+
+            if (selectedMonth === 'all') {
+                weekSelect.value = 'all'; weekSelect.disabled = true;
+                weekSelect.className = "bg-slate-200 text-slate-400 text-[11px] font-semibold rounded-lg px-2.5 py-1 outline-none border border-slate-300 cursor-not-allowed";
+                weekSelect.innerHTML = `<option value="all">Semanas (Indisponível p/ Todos Meses)</option>`;
+            } else {
+                weekSelect.disabled = false;
+                weekSelect.className = "bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-brand-dark border border-slate-200 cursor-pointer";
+                
+                const monthDaysSet = new Set(filteredDataForWeeks.map(d => d.dayNum));
+                const sortedMonthDays = Array.from(monthDaysSet).sort((a,b) => a - b);
+                
+                const weekChunks = [];
+                for (let i = 0; i < sortedMonthDays.length; i += 7) {
+                    weekChunks.push(sortedMonthDays.slice(i, i + 7));
+                }
+
+                const currentVal = weekSelect.value;
+                let optionsHtml = `<option value="all">Todas as Semanas (${nomesMeses[selectedMonth]})</option>`;
+                
+                weekChunks.forEach((chunk, index) => {
+                    const wNum = index + 1;
+                    const startDay = String(chunk[0]).padStart(2, '0');
+                    const endDay = String(chunk[chunk.length - 1]).padStart(2, '0');
+                    optionsHtml += `<option value="${wNum}">Semana ${wNum} (Dias ${startDay} ao ${endDay})</option>`;
+                });
+                
+                weekSelect.innerHTML = optionsHtml;
+                if(weekSelect.querySelector(`option[value="${currentVal}"]`)) { weekSelect.value = currentVal; } 
+                else { weekSelect.value = 'all'; }
+            }
+
+            const currentWeekVal = weekSelect.value;
+            updateTimelineButtons(selectedMonth, selectedYear);
+
+            let filteredData = [...filteredDataForWeeks];
+
+            if(filteredData.length === 0) {
+                document.getElementById('kpi-total').textContent = '0';
+                ['kpi-tme-avg', 'kpi-tma-avg', 'kpi-tme-max', 'kpi-tma-max'].forEach(id => document.getElementById(id).textContent = '0.0');
+                if(trendChartInstance) trendChartInstance.destroy();
+                if(userChartInstance) userChartInstance.destroy();
+                document.getElementById('heatmap-container').innerHTML = '<p class="text-[11px] text-slate-500 py-8 text-center font-medium">Nenhum dado para o filtro selecionado.</p>';
+                document.getElementById('ranking-container').innerHTML = '';
+                return;
+            }
+
+            const validTmeData = filteredData.filter(d => d.tme >= 0 && d.tme <= 480);
+            const validTmaData = filteredData.filter(d => d.tma > 0 && d.tma <= 180);
+
+            const total = filteredData.length;
+            const tmeAvg = validTmeData.length ? validTmeData.reduce((acc, curr) => acc + curr.tme, 0) / validTmeData.length : 0;
+            const tmaAvg = validTmaData.length ? validTmaData.reduce((acc, curr) => acc + curr.tma, 0) / validTmaData.length : 0;
+            const tmeMax = validTmeData.length ? Math.max(...validTmeData.map(d => d.tme)) : 0;
+            const tmaMax = validTmaData.length ? Math.max(...validTmaData.map(d => d.tma)) : 0;
+
+            document.getElementById('kpi-total').textContent = total.toLocaleString('pt-BR');
+            document.getElementById('kpi-tme-avg').textContent = tmeAvg.toFixed(1);
+            document.getElementById('kpi-tma-avg').textContent = tmaAvg.toFixed(1);
+            document.getElementById('kpi-tme-max').textContent = tmeMax.toFixed(1);
+            document.getElementById('kpi-tma-max').textContent = tmaMax.toFixed(1);
+
+            const tmeAvgEl = document.getElementById('kpi-tme-avg');
+            if(tmeAvg > 10) { tmeAvgEl.className = "text-2xl font-extrabold leading-none text-danger"; }
+            else if (tmeAvg > 7) { tmeAvgEl.className = "text-2xl font-extrabold leading-none text-warning"; }
+            else { tmeAvgEl.className = "text-2xl font-extrabold leading-none text-brand-dark"; }
+
+            currentChartData = filteredData;
+            renderTrendChart(currentChartData);
+            renderRanking(filteredData);
+            renderUserChart(filteredData);
+
+            let heatmapData = [...filteredData];
+            let weekLabelText = "";
+            
+            if(selectedMonth !== 'all' && currentWeekVal !== 'all') {
+                const monthDaysSet = new Set(filteredDataForWeeks.map(d => d.dayNum));
+                const sortedMonthDays = Array.from(monthDaysSet).sort((a,b) => a - b);
+                const weekChunks = [];
+                for (let i = 0; i < sortedMonthDays.length; i += 7) { weekChunks.push(sortedMonthDays.slice(i, i + 7)); }
+                
+                const targetChunkIndex = parseInt(currentWeekVal) - 1;
+                if (weekChunks[targetChunkIndex]) {
+                    const daysInThisChunk = weekChunks[targetChunkIndex];
+                    const startDay = String(daysInThisChunk[0]).padStart(2, '0');
+                    const endDay = String(daysInThisChunk[daysInThisChunk.length - 1]).padStart(2, '0');
+                    weekLabelText = `Semana ${currentWeekVal} (Dias ${startDay} ao ${endDay})`;
+                    heatmapData = heatmapData.filter(row => daysInThisChunk.includes(row.dayNum));
+                } else {
+                    weekLabelText = `Semana ${currentWeekVal} (Sem registos)`; heatmapData = [];
+                }
+            } else {
+                weekLabelText = selectedMonth !== 'all' ? `Todas as semanas do mês de ${nomesMeses[selectedMonth]}` : "Consolidado do ano todo";
+            }
+
+            let periodTextForHeatmap = selectedMonth !== 'all' ? `do mês de ${nomesMeses[selectedMonth]}` : "do ano todo";
+            renderHeatmap(heatmapData, weekLabelText, periodTextForHeatmap);
+        }
+
+        // Gráfico Tendência
+        function setChartTimeline(days, btnElement) {
+            currentTimelineView = days;
+            document.querySelectorAll('.timeline-btn').forEach(btn => {
+                btn.className = "timeline-btn px-2.5 py-1 text-[10px] font-bold rounded-md text-slate-600 hover:text-slate-800 transition-all cursor-pointer";
+            });
+            if(btnElement) {
+                btnElement.className = "timeline-btn px-2.5 py-1 text-[10px] font-bold rounded-md shadow-sm bg-white text-brand-dark transition-all cursor-pointer";
+            }
+            renderTrendChart(currentChartData);
+        }
+
+        function updateTimelineButtons(selectedMonth, selectedYear) {
+            const container = document.getElementById('timeline-buttons-container');
+            if(!container) return;
+            let html = '';
+            const baseClass = "timeline-btn px-2.5 py-1 text-[10px] font-bold rounded-md transition-all cursor-pointer ";
+            const inactiveClass = baseClass + "text-slate-600 hover:text-slate-800";
+            const activeClass = baseClass + "shadow-sm bg-white text-brand-dark";
+
+            if (selectedMonth === 'all') {
+                if (!['7', '15', '30', '60', 'all'].includes(currentTimelineView)) { currentTimelineView = '30'; }
+                html += `<button onclick="setChartTimeline('7', this)" class="${currentTimelineView === '7' ? activeClass : inactiveClass}">7 Dias</button>`;
+                html += `<button onclick="setChartTimeline('15', this)" class="${currentTimelineView === '15' ? activeClass : inactiveClass}">15 Dias</button>`;
+                html += `<button onclick="setChartTimeline('30', this)" class="${currentTimelineView === '30' ? activeClass : inactiveClass}">30 Dias</button>`;
+                html += `<button onclick="setChartTimeline('60', this)" class="${currentTimelineView === '60' ? activeClass : inactiveClass}">60 Dias</button>`;
+                html += `<button onclick="setChartTimeline('all', this)" class="${currentTimelineView === 'all' ? activeClass : inactiveClass}">Tudo</button>`;
+            } else {
+                const year = selectedYear !== 'all' ? parseInt(selectedYear) : new Date().getFullYear();
+                const month = parseInt(selectedMonth);
+                const daysInMonth = new Date(year, month, 0).getDate(); 
+                if (!['7', '15', 'all', String(daysInMonth)].includes(currentTimelineView)) { currentTimelineView = 'all'; }
+                html += `<button onclick="setChartTimeline('7', this)" class="${currentTimelineView === '7' ? activeClass : inactiveClass}">7 Dias</button>`;
+                html += `<button onclick="setChartTimeline('15', this)" class="${currentTimelineView === '15' ? activeClass : inactiveClass}">15 Dias</button>`;
+                html += `<button onclick="setChartTimeline('${daysInMonth}', this)" class="${currentTimelineView === String(daysInMonth) ? activeClass : inactiveClass}">${daysInMonth} Dias</button>`;
+                html += `<button onclick="setChartTimeline('all', this)" class="${currentTimelineView === 'all' ? activeClass : inactiveClass}">Tudo</button>`;
+            }
+            container.innerHTML = html;
+        }
+
+        function renderTrendChart(data) {
+            const groupedByDate = {};
+            const daysMap = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+
+            data.forEach(d => {
+                if(!groupedByDate[d.date]) {
+                    // Adaptado para armazenar as somas e as contagens para calcular as médias
+                    groupedByDate[d.date] = { count: 0, sumTme: 0, countTme: 0, sumTma: 0, countTma: 0, dayName: daysMap[d.dayOfWeek] };
+                }
+                groupedByDate[d.date].count++;
+                
+                if (d.tme >= 0 && d.tme <= 480) {
+                    groupedByDate[d.date].sumTme += d.tme;
+                    groupedByDate[d.date].countTme++;
+                }
+                if (d.tma > 0 && d.tma <= 180) {
+                    groupedByDate[d.date].sumTma += d.tma;
+                    groupedByDate[d.date].countTma++;
+                }
+            });
+
+            let dates = Object.keys(groupedByDate).sort();
+            if (currentTimelineView !== 'all') {
+                const daysToKeep = parseInt(currentTimelineView);
+                if (dates.length > daysToKeep) { dates = dates.slice(dates.length - daysToKeep); }
+            }
+
+            let displayData = dates.map(d => {
+                const g = groupedByDate[d];
+                return {
+                    dateStr: d,
+                    dayName: g.dayName,
+                    // Calculo exato da Média em vez do Pico
+                    avgTme: g.countTme > 0 ? (g.sumTme / g.countTme).toFixed(1) : 0,
+                    avgTma: g.countTma > 0 ? (g.sumTma / g.countTma).toFixed(1) : 0
+                };
+            });
+
+            const oppWrapper = document.getElementById('trend-opportunity-wrapper');
+            oppWrapper.innerHTML = '';
+            
+            if (displayData.length > 0) {
+                let highestTmeObj = displayData.reduce((prev, curr) => (parseFloat(curr.avgTme) > parseFloat(prev.avgTme)) ? curr : prev, displayData[0]);
+                let highestTmaObj = displayData.reduce((prev, curr) => (parseFloat(curr.avgTma) > parseFloat(prev.avgTma)) ? curr : prev, displayData[0]);
+
+                oppWrapper.innerHTML = `
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-center gap-2.5">
+                        <i class="ph-fill ph-warning-circle text-red-500 text-sm shrink-0 ml-0.5"></i>
+                        <p class="text-[11px] text-red-950 font-medium leading-relaxed">
+                            <b class="uppercase tracking-wider text-red-700 font-bold">OPORTUNIDADE:</b> 
+                            A maior média de espera ocorreu na <b>${highestTmeObj.dayName}</b> atingindo <b>${highestTmeObj.avgTme}m</b>. A maior média de atendimento registrada foi de <b>${highestTmaObj.avgTma}m</b>.
+                        </p>
+                    </div>
+                `;
+            }
+
+            const tmeAvgs = displayData.map(d => parseFloat(d.avgTme)); 
+            const tmaAvgs = displayData.map(d => parseFloat(d.avgTma)); 
+            const dayNames = displayData.map(d => d.dayName);
+            const labels = dates.map(d => { const parts = d.split('-'); return `${parts[2]}/${parts[1]}`; });
+
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            if(trendChartInstance) trendChartInstance.destroy();
+
+            const gradientTME = ctx.createLinearGradient(0, 0, 0, 240);
+            gradientTME.addColorStop(0, 'rgba(88, 43, 107, 0.3)'); gradientTME.addColorStop(1, 'rgba(88, 43, 107, 0.0)'); 
+
+            const gradientTMA = ctx.createLinearGradient(0, 0, 0, 240);
+            gradientTMA.addColorStop(0, 'rgba(130, 211, 0, 0.3)'); gradientTMA.addColorStop(1, 'rgba(130, 211, 0, 0.0)');
+
+            trendChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Média Diária de TME', data: tmeAvgs, borderColor: '#582b6b', backgroundColor: gradientTME, borderWidth: 2, tension: 0.4, fill: true, pointBackgroundColor: '#ffffff', pointBorderColor: '#582b6b', pointBorderWidth: 1.5, pointRadius: 3, pointHoverRadius: 6, yAxisID: 'y' },
+                        { label: 'Média Diária de TMA', data: tmaAvgs, borderColor: '#82d300', backgroundColor: gradientTMA, borderWidth: 2, tension: 0.4, fill: true, pointBackgroundColor: '#ffffff', pointBorderColor: '#82d300', pointBorderWidth: 1.5, pointRadius: 3, pointHoverRadius: 6, yAxisID: 'y' }
+                    ]
+                },
+                options: { 
+                    responsive: true, maintainAspectRatio: false, layout: { padding: { left: 0, right: 15, top: 10 } },
+                    interaction: { mode: 'index', intersect: false }, 
+                    plugins: { 
+                        legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 12, boxPadding: 8, padding: 20, font: { size: 10, weight: 'bold', family: 'Inter' } } },
+                        tooltip: { backgroundColor: 'rgba(63, 30, 77, 0.95)', titleFont: { size: 11, weight: 'bold', family: 'Inter' }, bodyFont: { size: 10, family: 'Inter' }, padding: 8, cornerRadius: 6, displayColors: true,
+                            callbacks: {
+                                title: function(context) { const idx = context[0].dataIndex; return `${dayNames[idx]}, ${context[0].label}`; },
+                                label: function(context) {
+                                    const val = context.parsed.y;
+                                    const label = context.dataset.label;
+                                    return ` ${label}: ${val}m`;
+                                }
+                            }
+                        }
+                    }, 
+                    scales: { 
+                        y: { type: 'linear', display: true, position: 'left', beginAtZero: true, grid: { borderDash: [4, 4], color: '#f1f5f9' }, title: { display: true, text: 'Tempos Médios (min)', font: { size: 10, weight: 'bold', color: '#64748b', family: 'Inter' } }, ticks: { callback: function(value) { return value + 'm'; }, font: { size: 9, color: '#64748b', weight: '600', family: 'Inter' } } },
+                        x: { grid: { display: false }, ticks: { font: { size: 9, color: '#64748b', weight: 'bold', family: 'Inter' } } } 
+                    } 
+                }
+            });
+        }
+
+        function renderUserChart(data) {
+            const userStats = {};
+            data.forEach(d => {
+                if(!userStats[d.user]) userStats[d.user] = { vol: 0, sumTma: 0, countTma: 0, sumTme: 0, countTme: 0 };
+                userStats[d.user].vol++;
+                if(d.tma > 0 && d.tma <= 180) { userStats[d.user].sumTma += d.tma; userStats[d.user].countTma++; }
+                if(d.tme >= 0 && d.tme <= 480) { userStats[d.user].sumTme += d.tme; userStats[d.user].countTme++; }
+            });
+
+            const usersArray = Object.keys(userStats).map(u => ({ name: u, shortName: getShortName(u), vol: userStats[u].vol, tmaAvg: userStats[u].countTma > 0 ? userStats[u].sumTma / userStats[u].countTma : 0, tmeAvg: userStats[u].countTme > 0 ? userStats[u].sumTme / userStats[u].countTme : 0 }));
+            const cleanUsersArray = usersArray.filter(u => u.name !== 'Sem Usuário' && u.name.toLowerCase() !== 'desconhecido');
+            const sortedUsers = [...cleanUsersArray].sort((a,b) => b.vol - a.vol).slice(0, 10); 
+
+            const radarWrapper = document.getElementById('radar-wrapper');
+            radarWrapper.innerHTML = '';
+            const minVolumeThreshold = Math.max(15, data.length * 0.02);
+            const regularUsers = cleanUsersArray.filter(u => u.vol >= minVolumeThreshold);
+
+            if(regularUsers.length > 0) {
+                const fastest = [...regularUsers].sort((a,b) => a.tmaAvg - b.tmaAvg)[0];
+                const highestVol = [...cleanUsersArray].sort((a,b) => b.vol - a.vol)[0];
+                const lowestProd = [...regularUsers].sort((a,b) => (b.tmaAvg + b.tmeAvg) - (a.tmaAvg + a.tmeAvg))[0];
+                const cicloTotal = (lowestProd.tmaAvg + lowestProd.tmeAvg).toFixed(1);
+                
+                document.getElementById('insight-fastest').textContent = fastest.shortName;
+                document.getElementById('insight-fastest-val').textContent = `${fastest.tmaAvg.toFixed(1)}m`;
+                document.getElementById('insight-volume').textContent = highestVol.shortName;
+                document.getElementById('insight-volume-val').textContent = `${highestVol.vol.toLocaleString('pt-BR')} atd`;
+                
+                radarWrapper.innerHTML = `
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-center gap-2.5">
+                        <i class="ph-fill ph-warning-circle text-red-500 text-xs shrink-0 ml-0.5"></i>
+                        <p class="text-[10px] text-red-950 font-medium leading-relaxed">
+                            <b class="uppercase tracking-wider text-red-700 font-bold">OPORTUNIDADE:</b> 
+                            <b>${lowestProd.shortName}</b> apresenta o maior ciclo médio consolidado (${cicloTotal}m por paciente) de forma recorrente no período, sugerindo revisão de processos.
+                        </p>
+                    </div>
+                `;
+            }
+
+            const labels = sortedUsers.map(u => u.shortName); const volumes = sortedUsers.map(u => u.vol); const tmas = sortedUsers.map(u => u.tmaAvg.toFixed(1));
+
+            const ctx = document.getElementById('userChart').getContext('2d');
+            if(userChartInstance) userChartInstance.destroy();
+
+            const topLabelsPlugin = {
+                id: 'topLabels',
+                afterDatasetsDraw(chart, args, pluginOptions) {
+                    const { ctx } = chart; const dataset = chart.data.datasets[0]; 
+                    chart.getDatasetMeta(0).data.forEach((bar, index) => {
+                        const data = dataset.data[index];
+                        ctx.save(); ctx.fillStyle = '#582b6b'; ctx.textAlign = 'center'; ctx.font = 'bold 10px Inter, sans-serif';
+                        ctx.fillText(data.toLocaleString('pt-BR'), bar.x, bar.y - 5); ctx.restore();
+                    });
+                }
+            };
+
+            userChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { type: 'bar', label: 'Volume de Atend.', data: volumes, backgroundColor: 'rgba(88, 43, 107, 0.15)', borderColor: '#582b6b', borderWidth: 1, borderRadius: 4, order: 2, yAxisID: 'y' },
+                        { type: 'line', label: 'TMA Médio (min)', data: tmas, borderColor: '#7b3e94', backgroundColor: '#7b3e94', borderWidth: 2, pointRadius: 3.5, pointHoverRadius: 5, tension: 0.3, order: 1, yAxisID: 'y1' }
+                    ]
+                },
+                plugins: [topLabelsPlugin],
+                options: { 
+                    responsive: true, maintainAspectRatio: false, layout: { padding: { top: 15 } }, plugins: { legend: { display: false } }, 
+                    scales: { 
+                        y: { display: false, beginAtZero: true }, y1: { display: false, beginAtZero: true }, 
+                        x: { grid: { display: false }, ticks: { maxRotation: 0, minRotation: 0, color: '#334155', font: { size: 9, weight: '700', family: 'Inter' } }, border: { display: false } } 
+                    } 
+                }
+            });
+        }
+
+        function renderRanking(data) {
+            const container = document.getElementById('ranking-container');
+            container.innerHTML = '';
+            const userStats = {}; const hourlyTotalVol = {}; 
+            
+            data.forEach(d => { const hourKey = `${d.date}-${d.hour}`; if(!hourlyTotalVol[hourKey]) hourlyTotalVol[hourKey] = 0; hourlyTotalVol[hourKey]++; });
+            data.forEach(d => {
+                if(!userStats[d.user]) userStats[d.user] = { count: 0, sumTma: 0, countTma: 0, sumTme: 0, countTme: 0, activeHours: new Set() };
+                userStats[d.user].count++;
+                if (d.tma > 0 && d.tma <= 180) { userStats[d.user].sumTma += d.tma; userStats[d.user].countTma++; }
+                if (d.tme >= 0 && d.tme <= 480) { userStats[d.user].sumTme += d.tme; userStats[d.user].countTme++; }
+                userStats[d.user].activeHours.add(`${d.date}-${d.hour}`);
+            });
+
+            let usersArray = Object.keys(userStats).map(user => {
+                const count = userStats[user].count;
+                const tmaAvg = userStats[user].countTma > 0 ? userStats[user].sumTma / userStats[user].countTma : 0;
+                const tmeAvg = userStats[user].countTme > 0 ? userStats[user].sumTme / userStats[user].countTme : 0;
+                let totalVolumeInShift = 0;
+                userStats[user].activeHours.forEach(h => { totalVolumeInShift += hourlyTotalVol[h]; });
+                const shareOfShift = totalVolumeInShift > 0 ? (count / totalVolumeInShift) : 0; 
+                return { user: user, shortName: getShortName(user), count: count, tmaAvg: tmaAvg, tmeAvg: tmeAvg, share: shareOfShift };
+            });
+
+            usersArray = usersArray.filter(u => u.user !== 'Sem Usuário' && u.user.toLowerCase() !== 'desconhecido');
+            const minThreshold = Math.max(5, data.length * 0.005);
+            let validUsers = usersArray.filter(u => u.count >= minThreshold);
+            
+            if(validUsers.length === 0) validUsers = usersArray;
+            if(validUsers.length === 0) { container.innerHTML = '<p class="text-[11px] text-slate-500 font-medium">Dados insuficientes para destaques.</p>'; return; }
+
+            const bestTMA = [...validUsers].sort((a, b) => a.tmaAvg - b.tmaAvg)[0];
+            const bestTME = [...validUsers].sort((a, b) => a.tmeAvg - b.tmeAvg)[0];
+            const bestVol = [...validUsers].sort((a, b) => (b.count * b.share) - (a.count * a.share))[0];
+
+            const podiumList = [
+                { title: "Mais Ágil no Atend.", metricLabel: "TMA MÉDIO", metricValue: `${bestTMA.tmaAvg.toFixed(1)}m`, icon: "ph-rocket-launch text-brand-dark", bgClass: "bg-purple-50 hover:bg-purple-100 border-purple-200", textClass: "text-brand-dark", userData: bestTMA },
+                { title: "Menor Tmp. Espera", metricLabel: "TME MÉDIO", metricValue: `${bestTME.tmeAvg.toFixed(1)}m`, icon: "ph-hourglass-low text-purple-700", bgClass: "bg-purple-50 hover:bg-purple-100 border-purple-200", textClass: "text-purple-700", userData: bestTME },
+                { title: "Produtividade Máxima", metricLabel: "ATENDIMENTOS", metricValue: bestVol.count.toLocaleString('pt-BR'), icon: "ph-stack text-brand-light", bgClass: "bg-purple-50 hover:bg-purple-100 border-purple-200", textClass: "text-brand-light", userData: bestVol }
+            ];
+
+            podiumList.forEach(item => {
+                const el = document.createElement('div');
+                el.className = `flex flex-col p-3 rounded-xl border shadow-sm transition-colors cursor-default ${item.bgClass} relative overflow-hidden`;
+                const u = item.userData; const nameParts = u.shortName.split(' '); const initials = (nameParts[0][0] + (nameParts[1] ? nameParts[1][0] : '')).toUpperCase(); const sharePct = (u.share * 100).toFixed(0);
+                el.innerHTML = `
+                    <div class="flex items-center gap-1.5 mb-1.5 border-b border-black/5 pb-1"><i class="ph-fill ${item.icon} text-xs"></i><span class="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">${item.title}</span></div>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2.5 min-w-0 pr-1 flex-grow">
+                            <div class="w-8 h-8 rounded-full flex items-center justify-center border shadow-sm bg-white font-extrabold text-xs ${item.textClass} shrink-0">${initials}</div>
+                            <div class="flex flex-col min-w-0 flex-grow">
+                                <p class="font-extrabold text-xs text-slate-900 tracking-wide leading-tight truncate" title="${u.shortName}">${u.shortName}</p>
+                                <p class="text-[10px] text-slate-600 font-semibold mt-0.5 truncate" title="Turno: ${sharePct}%">Carga do Turno: <b class="text-slate-900">${sharePct}%</b></p>
+                            </div>
+                        </div>
+                        <div class="flex flex-col items-end shrink-0 pl-2 border-l border-black/5 min-w-[70px]">
+                            <p class="font-black text-sm ${item.textClass} leading-none whitespace-nowrap">${item.metricValue}</p>
+                            <p class="text-[8px] uppercase tracking-wider text-slate-500 font-extrabold mt-1">${item.metricLabel}</p>
+                        </div>
+                    </div>`;
+                container.appendChild(el);
+            });
+        }
+
+        function renderHeatmap(data, weekLabelText, periodText) {
+            const container = document.getElementById('heatmap-container');
+            const subtitle = document.getElementById('heatmap-subtitle');
+            const opportunityWrapper = document.getElementById('heatmap-opportunity-wrapper');
+            container.innerHTML = ''; opportunityWrapper.innerHTML = '';
+            subtitle.innerHTML = `A exibir dados para: <b>${weekLabelText}</b> (${periodText}).`;
+
+            const hours = [6,7,8,9,10,11,12,13,14,15,16,17,18,19];
+            const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+            const fullDaysMap = {'Dom':'Domingo', 'Seg':'Segunda-feira', 'Ter':'Terça-feira', 'Qua':'Quarta-feira', 'Qui':'Quinta-feira', 'Sex':'Sexta-feira', 'Sáb':'Sábado'};
+            
+            const matrixVol = {}; const matrixTME = {};
+            days.forEach((d, i) => { matrixVol[i] = {}; matrixTME[i] = {}; hours.forEach(h => { matrixVol[i][h] = 0; matrixTME[i][h] = 0; }); });
+
+            let maxVol = 0; let peakVolDay = 0, peakVolHour = 0;
+            data.forEach(d => {
+                if(hours.includes(d.hour)) { matrixVol[d.dayOfWeek][d.hour]++; matrixTME[d.dayOfWeek][d.hour] += d.tme; }
+            });
+
+            days.forEach((_, dIdx) => {
+                hours.forEach(h => { if(matrixVol[dIdx][h] > maxVol) { maxVol = matrixVol[dIdx][h]; peakVolDay = dIdx; peakVolHour = h; } });
+            });
+
+            let worstTME = 0, worstTMEDay = 0, worstTMEHour = 0, worstTMEVol = 0;
+            let minVolThreshold = Math.max(5, maxVol * 0.05); 
+
+            days.forEach((_, dIdx) => {
+                hours.forEach(h => {
+                    let vol = matrixVol[dIdx][h];
+                    if(vol >= minVolThreshold) {
+                        let avgTme = matrixTME[dIdx][h] / vol;
+                        if(avgTme > worstTME) { worstTME = avgTme; worstTMEDay = dIdx; worstTMEHour = h; worstTMEVol = vol; }
+                    }
+                });
+            });
+
+            if(maxVol > 0 && worstTME > 0) {
+                const peakVolName = fullDaysMap[days[peakVolDay]];
+                const worstTMEName = fullDaysMap[days[worstTMEDay]];
+                let insightText = "";
+                
+                if(peakVolDay === worstTMEDay && peakVolHour === worstTMEHour) {
+                    insightText = `O pico das <b>${peakVolHour}h de ${peakVolName}</b> além de ser o horário de maior volume, possui um <b>TME crítico de ${worstTME.toFixed(1)} min</b>. A fila está a romper o limite de absorção da equipa.`;
+                } else {
+                    insightText = `O volume óbvio é às ${peakVolHour}h, mas o gargalo oculto ocorre nas <b>${worstTMEName}s às ${worstTMEHour}h</b>. Com um fluxo menor (${worstTMEVol} senhas), a Espera salta para <b>${worstTME.toFixed(1)} min</b>. Investigue desfalques.`;
+                }
+
+                opportunityWrapper.innerHTML = `
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-center gap-2.5">
+                        <i class="ph-fill ph-warning-circle text-red-500 text-sm shrink-0 ml-0.5"></i>
+                        <p class="text-[11px] text-red-950 font-medium leading-relaxed">
+                            <b class="uppercase tracking-wider text-red-700 font-bold">OPORTUNIDADE:</b> ${insightText}
+                        </p>
+                    </div>`;
+            }
+
+            const grid = document.createElement('div');
+            grid.className = 'grid gap-1 text-[11px] text-center';
+            grid.style.gridTemplateColumns = `35px repeat(${hours.length}, 1fr)`;
+            grid.appendChild(document.createElement('div'));
+            
+            hours.forEach(h => {
+                const cell = document.createElement('div'); cell.className = 'text-slate-500 font-bold pb-1 text-[10px]'; cell.textContent = `${h}h`; grid.appendChild(cell);
+            });
+
+            days.forEach((dayName, dayIndex) => {
+                const dayLabel = document.createElement('div');
+                dayLabel.className = 'text-slate-700 font-bold text-[10px] flex items-center justify-end pr-1.5'; dayLabel.textContent = dayName; grid.appendChild(dayLabel);
+
+                hours.forEach(h => {
+                    const cell = document.createElement('div');
+                    const val = matrixVol[dayIndex][h];
+                    const avgTmeStr = val > 0 ? (matrixTME[dayIndex][h] / val).toFixed(1) : "0.0";
+                    let intensity = maxVol > 0 ? val / maxVol : 0;
+                    if(val > 0 && intensity < 0.15) intensity = 0.2;
+
+                    cell.className = 'h-7 rounded-md heatmap-cell relative group flex items-center justify-center text-[10px] font-bold transition-colors';
+                    if (val === 0) { cell.style.backgroundColor = '#f9f8fb'; cell.style.color = '#cbd5e1'; } 
+                    else { cell.style.backgroundColor = `rgba(88, 43, 107, ${Math.max(0.12, intensity)})`; cell.style.color = intensity > 0.5 ? '#ffffff' : '#582b6b'; }
+
+                    const valText = document.createElement('span'); valText.textContent = val > 0 ? val : '-'; cell.appendChild(valText);
+
+                    const tooltip = document.createElement('div');
+                    tooltip.className = 'absolute bottom-full left-1/2 transform -translate-x-1/2 mb-1.5 hidden group-hover:block bg-dark text-white text-[11px] py-1 px-2.5 rounded-lg whitespace-nowrap z-50 pointer-events-none shadow-xl font-normal text-left';
+                    tooltip.innerHTML = `<div class="font-bold text-brand-accent mb-0.5 border-b border-purple-900 pb-0.5">${dayName} às ${h}h</div>
+                                         <div class="flex justify-between gap-3"><span>Volume:</span> <b>${val} senhas</b></div>
+                                         <div class="flex justify-between gap-3"><span>Espera Média:</span> <b>${avgTmeStr} min</b></div>`;
+                    cell.appendChild(tooltip);
+                    grid.appendChild(cell);
+                });
+            });
+            container.appendChild(grid);
+        }
+
+        function exportToPDF() {
+            const element = document.getElementById('dashboard-printable-area');
+            const monthVal = document.getElementById('filter-month').value;
+            const yearVal = document.getElementById('filter-year').value;
+            const periodStr = monthVal !== 'all' ? `${nomesMeses[monthVal]}_${yearVal}` : `${yearVal}`;
+            
+            const opt = {
+                margin:       [4, 4, 4, 4],
+                filename:     `Relatorio_Oncologia_Samaritano_${periodStr}.pdf`,
+                image:        { type: 'jpeg', quality: 0.98 },
+                html2canvas:  { scale: 2, useCORS: true, logging: false, letterRendering: true },
+                jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' },
+                pagebreak:    { mode: 'avoid-all' }
+            };
+
+            const btn = event.currentTarget;
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = `<i class="ph-bold ph-spinner animate-spin text-xs"></i> A gerar PDF...`;
+            
+            html2pdf().from(element).set(opt).save().then(() => { btn.innerHTML = originalHTML; }).catch(err => { console.error("Erro ao gerar PDF:", err); btn.innerHTML = originalHTML; alert("Erro ao gerar o ficheiro PDF."); });
+        }
+
+        // --- GEMINI API INTEGRATION ---
+        function openAIModal() { document.getElementById('ai-modal').classList.remove('hidden'); generateAIExecutiveSummary(); }
+        function closeAIModal() { document.getElementById('ai-modal').classList.add('hidden'); }
+
+        async function callGeminiAPI(promptText) {
+            const systemPrompt = "Você é um consultor operacional sênior especializado em gestão de clínicas de oncologia e inteligência de atendimento. Analise os dados fornecidos do painel e dê respostas diretas, profissionais, objetivas e em português do Brasil.";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`;
+            const payload = { contents: [{ parts: [{ text: promptText }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
+
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const result = await response.json();
+            const candidate = result.candidates?.[0];
+            if (candidate && candidate.content?.parts?.[0]?.text) { return candidate.content.parts[0].text; }
+            throw new Error("Não foi possível obter resposta da IA.");
+        }
+
+        async function generateAIExecutiveSummary() {
+            const loadingEl = document.getElementById('ai-loading');
+            const contentEl = document.getElementById('ai-summary-text');
+            loadingEl.classList.remove('hidden'); contentEl.textContent = "A gerar auditoria com Gemini AI...";
+
+            const total = document.getElementById('kpi-total').textContent;
+            const tmeAvg = document.getElementById('kpi-tme-avg').textContent;
+            const tmaAvg = document.getElementById('kpi-tma-avg').textContent;
+            const tmeMax = document.getElementById('kpi-tme-max').textContent;
+            const tmaMax = document.getElementById('kpi-tma-max').textContent;
+            
+            const monthVal = document.getElementById('filter-month').value;
+            const yearVal = document.getElementById('filter-year').value;
+            const periodStr = monthVal !== 'all' ? `${nomesMeses[monthVal]} de ${yearVal}` : `Ano de ${yearVal}`;
+
+            const prompt = `Analise os seguintes indicadores operacionais do Ambulatório de Oncologia para o período de ${periodStr}:
+- Total de Atendimentos: ${total}
+- TME Médio (Espera): ${tmeAvg} min
+- TMA Médio (Atendimento): ${tmaAvg} min
+- Pico Máximo de Espera (TME): ${tmeMax} min
+- Pico Máximo de Atendimento (TMA): ${tmaMax} min
+
+Escreva um resumo executivo direto e perspicaz em 2 parágrafos destacando gargalos e oportunidades de melhoria operacional.`;
+
+            try { const aiText = await callGeminiAPI(prompt); contentEl.textContent = aiText; } 
+            catch (err) { contentEl.textContent = "Erro ao ligar à API do Gemini. Verifique a sua chave ou ligação."; console.error(err); } 
+            finally { loadingEl.classList.add('hidden'); }
+        }
+
+        async function askCustomAI() {
+            const inputEl = document.getElementById('ai-custom-prompt');
+            const answerBox = document.getElementById('ai-answer-box');
+            const question = inputEl.value.trim();
+            if (!question) return;
+
+            answerBox.classList.remove('hidden');
+            answerBox.innerHTML = `<div class="flex items-center gap-2"><div class="w-3 h-3 border-2 border-brand-dark border-t-transparent rounded-full animate-spin"></div><span>Gemini está a analisar a sua pergunta...</span></div>`;
+
+            const total = document.getElementById('kpi-total').textContent;
+            const tmeAvg = document.getElementById('kpi-tme-avg').textContent;
+            const tmaAvg = document.getElementById('kpi-tma-avg').textContent;
+
+            const prompt = `Com base no contexto do ambulatório (Total de atendimentos: ${total}, TME Médio: ${tmeAvg}m, TMA Médio: ${tmaAvg}m), responda à seguinte pergunta do gestor: "${question}"`;
+
+            try { const answerText = await callGeminiAPI(prompt); answerBox.innerHTML = `<b>Pergunta:</b> "${question}"<br><br><b>Resposta da IA:</b> ${answerText}`; } 
+            catch (err) { answerBox.textContent = "Ocorreu um erro ao processar a sua pergunta."; console.error(err); }
+        }
+    </script>
+</body>
+</html>
